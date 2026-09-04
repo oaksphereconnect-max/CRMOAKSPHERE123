@@ -1,0 +1,62 @@
+{
+  "summary": "Full v2 audit test of OAKsphere Connect. BACKEND: new pytest suite /app/backend/tests/test_v2_audit.py (32 cases) covering Tags CRUD+permissions+lead tagging+tag filter+delete-pull, WhatsApp templates CRUD (5 seeded) + whatsapp activity log, Notes CRUD + activities payload shape + recruiter note ownership 403, follow-up enforcement on PATCH /leads (400 without date on non-final change, supersede chain, final-status validations for Selected/Rejected/Not Interested), call-log rules (No Answer -> 400/200 + Attempted, Not Interested -> final, Invalid Number -> Invalid Lead + phone_valid False, Interview Scheduled required fields + interview record), follow-up views/counts/create/reschedule/complete(next & final)/delete + recruiter 403, users PATCH/duplicate-email/admin protection/delete-requires-transfer/transfer-leads endpoint/recruiter 403, lead delete cascade, recruiter scope 403s, dashboard/main today keys, lead saved views, settings new statuses, interview stage->lead status mapping + interview/joining delete guards, clients/jobs CRUD. 32/32 passed. Also repaired 7 stale v1 assertions in backend_test.py (they relied on pre-v2 behaviour/seed data) -> full suite now 98/98 green. FRONTEND (Playwright, admin + recruiter + mobile): dashboard 12 KPI cards + clickable kpi-fresh-leads -> /leads?view=new_leads chip active; leads filters/search/clear + URL sync; row actions call/wa/edit/delete incl. cancel & confirm; Add Lead with prefilled follow-up; lead drawer all 12 actions (note add/edit/delete, tag picker, status change with amber follow-up section, Not Interested requires reason + 'Lead closed' banner, add follow-up, assign, timeline); WhatsApp modal (5 templates, name substitution, wa.me popup); disposition modal (No Answer follow-up prefilled + error on cleared date + success, Not Interested final-status-note, no follow-up section); Follow-ups page 6 tabs + counts + search + complete(next date) moves to Completed and creates Tomorrow entry + reschedule + delete confirm; Recruiters add/edit/view-leads/transfer dialog/delete-with-leads warning/deactivate dialog/delete fresh user; Clients & Jobs create/edit/delete with confirms; Settings tags CRUD, templates CRUD + placeholder chip + preview with sample data, General tab shows all new statuses; Interviews edit/reschedule/stage/delete; Joining list/edit dialog; recruiter role guards (no delete buttons, no drawer delete/assign, no client/job write, no fu-delete, no Settings/Recruiters nav); mobile 390x844 no horizontal overflow + sidebar. No console/page errors observed. All test data created was cleaned up (18 leads / 6 users / 14 tags / 5 templates / 5 clients / 6 jobs restored; teamlead + recruiter logins re-verified 200).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "PATCH /api/tags/{tid}", "issue": "Rename does not check for duplicate names (POST /api/tags does). Two tags can end up with the same name via PATCH."},
+      {"endpoint": "DELETE /api/followups/{fid}", "issue": "Only clears lead.next_followup_date when the deleted doc's due_date matches exactly; and after deletion an ACTIVE (non-final) lead is left with no pending follow-up, breaking the 'every active lead must have a follow-up' invariant. Verified in UI: deleting the pending follow-up of an active lead left it with no next follow-up and no warning."},
+      {"endpoint": "POST /api/followups, POST /api/followups/{id}/complete, PATCH /api/followups/{id}", "issue": "due_date / next_date are not validated to be in the future — a past date is accepted, immediately creating an 'overdue' follow-up."},
+      {"endpoint": "Data invariant", "issue": "9 of the 18 existing leads are in active statuses (Contacted/Interested/Follow-up/Interview/New) with next_followup_date = null (UI shows '⚠ none'). Enforcement only fires on status change/call log, and seed_reference_data does not backfill, so the stated rule is not true for existing data."},
+      {"endpoint": "GET /api/interviews vs GET /api/dashboard/main", "issue": "dashboard today.interviews_scheduled = 2 but /api/interviews returns 0 records — some seeded leads carry interview_status='Scheduled' without a matching interviews document, so the Interviews page is empty while the KPI is non-zero."},
+      {"endpoint": "Multiple write endpoints (tags, wa-templates, notes, leads PATCH, followups, interviews, joinings)", "issue": "Bodies are raw dict (no Pydantic models). Arbitrary keys are persisted for interviews/joinings (`{**body}` spread in create_joining), and no type validation on dates."},
+      {"endpoint": "GET /api/followups/counts", "issue": "Calls get_followups() six times, each re-scanning all follow-ups + users + leads (6x full scans per dashboard/page load)."},
+      {"endpoint": "PATCH /api/users/{uid}", "issue": "UserUpdate strips None values, so team_leader_id / phone can never be cleared once set."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "WhatsApp modal", "issues": ["Templates use double-brace placeholders ({{Candidate Name}}) while the spec/UI chips describe single braces; unresolved placeholders such as {{Job Role}} / {{Salary}} remain in the outgoing wa.me text (a wa-unfilled-warning is shown, but the raw braces are still sent)."]},
+      {"screen": "Follow-ups page", "issues": ["Tab counts render as '…' for ~1-2s while /followups/counts resolves (6 sequential scans) — visible flicker on load."]},
+      {"screen": "Leads table", "issues": ["Active leads with no follow-up show '⚠ none' but there is no saved view / filter to list them, so the enforcement gap is not actionable from the UI."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_v2_audit.py",
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/tests/seed_ui_data.py",
+    "/app/test_reports/pytest/pytest_results.xml",
+    "/app/test_reports/pytest/v2_results.xml"
+  ],
+  "action_items": [
+    "Add duplicate-name check to PATCH /api/tags/{tid}",
+    "After DELETE /api/followups/{id}, if the lead is non-final and has no other pending follow-up, clear next_followup_date AND surface it (e.g. add a 'No follow-up' saved view / Action Required section)",
+    "Validate that follow-up due_date / next_date are in the future in POST /api/followups, PATCH /api/followups/{id} and /complete",
+    "Backfill next_followup_date for the 9 existing active leads (or add a one-time migration in seed_reference_data) so the 'every active lead has a follow-up' invariant holds for existing data",
+    "Reconcile interview_status on leads with the interviews collection (dashboard shows 2 scheduled interviews while /api/interviews is empty)",
+    "Replace raw dict bodies with Pydantic models on tags/wa-templates/notes/leads PATCH/followups/interviews/joinings; stop spreading **body into joining documents",
+    "Compute /api/followups/counts in a single aggregation instead of 6 get_followups() calls",
+    "Allow clearing nullable user fields (team_leader_id/phone) in PATCH /api/users",
+    "Split server.py (2155 lines) into routers (auth/leads/calls/followups/admin/dashboard)"
+  ],
+  "critical_code_review_comments": [
+    "server.py is 2155 lines — well past the 700-line guideline; the follow-up enforcement logic is duplicated between update_lead, log_call and complete_followup and should be extracted into one helper (a divergence between them would silently break the invariant).",
+    "delete_followup compares lead['next_followup_date'] == f['due_date'] to decide whether to clear the lead field — string equality on ISO timestamps is brittle; query for another pending follow-up instead.",
+    "create_joining does `{...defaults, **body}` so any client-supplied key is persisted verbatim into the joinings collection.",
+    "followup_counts re-invokes the route handler six times (get_followups) — every call loads all users and all referenced leads.",
+    "update_tag / update_wa_template call update_one before checking existence, so a PATCH to a missing id performs a no-op write then 404s (harmless but misleading)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_v2_audit.py (new — 32 v2 audit tests)",
+    "/app/backend/tests/seed_ui_data.py (new — seeds/cleans TEST_UI_* data for UI runs; `python seed_ui_data.py clean` removes all TEST_* artifacts)",
+    "/app/backend/tests/backend_test.py (test-only fixes: calling-list queue_reason no longer assumes overdue data; valid-disposition call now sends the now-mandatory follow-up date; overdue-follow-up and interview tests provision their own data instead of relying on seed)"
+  ],
+  "success_rate": {"backend": "100% (98/98 pytest, incl. 32 new v2 cases)", "frontend": "100% of exercised flows passed (no UI defects found)"},
+  "seed_data_creation": "Temporary TEST_UI_* leads (today/overdue/tomorrow follow-ups), TEST_UI_Recruiter user, TEST_UI_Client, TEST_UI_Job, TEST_UI_Tag, TEST_UI_Template and one TEST_UI_IV interview were created and then deleted. Final state verified back to baseline: 18 leads, 6 users, 14 tags, 5 templates, 5 clients, 6 jobs, 4 joinings, 0 interviews. teamlead@oaksphere.com and harshika@oaksphere.com logins re-verified (200). onkarkhillare4995@gmail.com untouched.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "Admin oaksphereconnect@gmail.com / OakAdmin@2026; TL teamlead@oaksphere.com / teamlead123; Recruiter harshika@oaksphere.com / recruiter123 (all verified working)",
+  "context_for_next_testing_agent": "Run `python /app/backend/tests/seed_ui_data.py` before Follow-ups-page UI testing (there are normally 0 today/overdue follow-ups) and `python /app/backend/tests/seed_ui_data.py clean` afterwards. Radix Select options are labelled with suffixes — e.g. 'Not Interested (final)' — so do not use exact=True for status options; the status-lost-reason control is a Select, not a text input. The lead drawer note-delete check must look at the Notes list, not the whole drawer (the timeline keeps the 'Note edited' entry). Recruiters page active-toggle always opens the deactivate dialog (confirm via transfer-confirm-btn). Interviews only exist after an 'Interview Scheduled' call log. Dashboard route is '/' not '/dashboard'.",
+  "rca_of_the_issue": "No functional defects reproduced in v2. The remaining gaps are invariant/validation holes rather than broken flows: (1) follow-up enforcement is applied only at write time inside update_lead/log_call/complete_followup, so pre-existing leads (9 of 18) and leads whose pending follow-up is deleted by an admin end up active with next_followup_date=null; (2) follow-up dates are never checked against now(), so past dates can be scheduled; (3) leads seeded with interview_status='Scheduled' have no matching interviews document, which is why the Interviews page is empty while the dashboard KPI reads 2."
+}

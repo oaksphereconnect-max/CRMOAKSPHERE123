@@ -25,20 +25,25 @@ export default function Dashboard() {
   if (!data) return <Loading />;
   const t = data.today;
   const maxFunnel = Math.max(...funnel.map((f) => f.count), 1);
+  const go = (q) => () => navigate(`/leads?${q}`);
 
   return (
     <div>
-      <PageHeader title={`Welcome, ${user.name.split(" ")[0]}`} subtitle="Today's performance at a glance" testid="dashboard-header" />
+      <PageHeader title={`Welcome, ${user.name.split(" ")[0]}`} subtitle="Today's performance at a glance — click any number to open the list" testid="dashboard-header" />
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <KpiCard testid="kpi-leads-added" label="Leads Added" value={t.leads_added} icon={Users2} tone="blue" />
-        <KpiCard testid="kpi-calls-made" label="Calls Made" value={t.calls_made} icon={PhoneCall} />
-        <KpiCard testid="kpi-connected" label="Connected" value={t.connected} sub={`${t.not_connected} not connected`} icon={UserCheck} tone="green" />
-        <KpiCard testid="kpi-interested" label="Interested" value={t.interested} icon={TrendingUp} tone="blue" />
-        <KpiCard testid="kpi-followups-due" label="Follow-ups Due" value={t.followups_due} icon={CalendarClock} tone="yellow" />
-        <KpiCard testid="kpi-followups-overdue" label="Overdue" value={t.followups_overdue} icon={AlertTriangle} tone="red" />
-        <KpiCard testid="kpi-interviews" label="Interviews" value={t.interviews_scheduled} sub={`${t.interviews_attended} attended`} icon={Phone} tone="blue" />
-        <KpiCard testid="kpi-joined" label="Joined" value={t.joined} sub={`${t.selected} selected`} icon={CheckCircle2} tone="green" />
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-4 mb-6">
+        <KpiCard testid="kpi-fresh-leads" label="Fresh Leads" value={t.fresh_leads} sub={`${t.leads_added} added today`} icon={Users2} tone="blue" onClick={go("view=new_leads")} />
+        <KpiCard testid="kpi-followups-due" label="Today Follow-ups" value={t.followups_due} icon={CalendarClock} tone="yellow" onClick={go("view=todays_followups")} />
+        <KpiCard testid="kpi-followups-overdue" label="Overdue Follow-ups" value={t.followups_overdue} icon={AlertTriangle} tone="red" onClick={go("view=overdue_followups")} />
+        <KpiCard testid="kpi-no-answer" label="No Answer" value={t.no_answer} icon={PhoneOff} onClick={go("view=no_answer")} />
+        <KpiCard testid="kpi-interested" label="Interested" value={t.interested} icon={TrendingUp} tone="blue" onClick={go("view=interested")} />
+        <KpiCard testid="kpi-interviews" label="Interviews" value={t.interviews_scheduled} sub={`${t.interviews_attended} attended`} icon={Phone} tone="blue" onClick={go("view=interviews")} />
+        <KpiCard testid="kpi-selected" label="Selected" value={t.selected} icon={Award} tone="green" onClick={go("view=selected")} />
+        <KpiCard testid="kpi-joined" label="Joined" value={t.joined} icon={CheckCircle2} tone="green" onClick={go("view=joined")} />
+        <KpiCard testid="kpi-rejected" label="Rejected / Lost" value={t.rejected} icon={AlertTriangle} tone="red" onClick={go("view=rejected")} />
+        <KpiCard testid="kpi-calls-made" label="Calls Today" value={t.calls_made} icon={PhoneCall} onClick={() => navigate("/calling")} />
+        <KpiCard testid="kpi-connected" label="Connected" value={t.connected} sub={`${t.not_connected} not connected`} icon={UserCheck} tone="green" onClick={() => navigate("/calling")} />
+        <KpiCard testid="kpi-leads-added" label="Leads Added Today" value={t.leads_added} sub={`${t.assigned} assigned`} icon={Users2} onClick={go("")} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">

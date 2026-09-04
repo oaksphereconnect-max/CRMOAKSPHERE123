@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import api, { formatError } from "@/lib/api";
 import { toast } from "sonner";
+import { isFinal, REASON_STATUSES, LOST_REASONS, tomorrow10Local } from "@/lib/ui";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,8 +11,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 
 const CONNECTED = ["Connected–Interested", "Not Interested", "Callback Requested", "Interview Scheduled", "Already Working", "Salary Issue", "Location Issue", "Job Mismatch"];
 const NOT_CONNECTED = ["No Answer", "Busy", "Switched Off", "Unreachable", "Invalid Number", "WhatsApp Only", "Call Back Later"];
-const LOST_REASONS = ["Not Interested", "Salary", "Location", "Already Joined", "Job Mismatch", "Invalid Number", "No Response", "Client Rejection", "Other"];
 const REQUIRES_FOLLOWUP = ["Callback Requested", "Call Back Later"];
+const AUTO_FINAL = { "Not Interested": "Not Interested", "Invalid Number": "Invalid Lead" };
+const DEFAULT_STATUSES = ["Contacted", "Interested", "Follow-up", "Selected", "Not Interested", "Rejected", "Closed", "Lost"];
 
 export default function CallDispositionModal({ open, onOpenChange, lead, onDone }) {
   const [disposition, setDisposition] = useState("");
@@ -27,31 +29,38 @@ export default function CallDispositionModal({ open, onOpenChange, lead, onDone 
   const [leadStatus, setLeadStatus] = useState("");
   const [clients, setClients] = useState([]);
   const [jobs, setJobs] = useState([]);
+  const [statuses, setStatuses] = useState(DEFAULT_STATUSES);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (open) {
-      setDisposition(""); setNotes(""); setFollowupDate(""); setFollowupReason("");
+      setDisposition(""); setNotes(""); setFollowupDate(tomorrow10Local()); setFollowupReason("");
       setInterviewDate(""); setClientId(lead?.client_id || ""); setJobId(lead?.job_id || "");
       setExpectedJoining(""); setLostReason(""); setLeadStatus("");
       api.get("/clients").then((r) => setClients(r.data)).catch(() => {});
       api.get("/jobs").then((r) => setJobs(r.data)).catch(() => {});
+      api.get("/settings").then((r) => r.data?.lead_statuses?.length && setStatuses(r.data.lead_statuses.filter((s) => s !== "New"))).catch(() => {});
     }
   }, [open, lead]);
 
-  const needFollowup = REQUIRES_FOLLOWUP.includes(disposition);
   const needInterview = disposition === "Interview Scheduled";
-  const isLost = leadStatus === "Lost" || disposition === "Invalid Number";
+  const predicted = leadStatus || AUTO_FINAL[disposition] || (needInterview ? "Interview" : lead?.lead_status);
+  const finalOutcome = isFinal(predicted);
+  const mustFollowup = REQUIRES_FOLLOWUP.includes(disposition);
+  const showFollowup = disposition && !finalOutcome && !needInterview;
   const isSelected = leadStatus === "Selected";
+  const needReason = REASON_STATUSES.includes(leadStatus);
 
   const save = async () => {
     if (!disposition) { toast.error("Select a call outcome"); return; }
+    if (showFollowup && !followupDate) { toast.error("Next follow-up date is required until the lead reaches a final status"); return; }
+    if (mustFollowup && !followupReason) { toast.error("Follow-up reason is required for callbacks"); return; }
     setSaving(true);
     try {
       await api.post(`/leads/${lead.id}/call`, {
         disposition, notes,
-        followup_date: followupDate ? new Date(followupDate).toISOString() : null,
-        followup_reason: followupReason,
+        followup_date: showFollowup && followupDate ? new Date(followupDate).toISOString() : null,
+        followup_reason: followupReason || (showFollowup ? `After: ${disposition}` : ""),
         interview_date: interviewDate ? new Date(interviewDate).toISOString() : null,
         interview_type: interviewType,
         client_id: clientId || null, job_id: jobId || null,
@@ -96,20 +105,6 @@ export default function CallDispositionModal({ open, onOpenChange, lead, onDone 
             </div>
           </div>
 
-          {needFollowup && (
-            <div className="grid gap-2 p-3 rounded-lg bg-amber-50 border border-amber-200">
-              <p className="text-xs font-semibold text-amber-700">Follow-up required</p>
-              <div>
-                <Label className="text-xs">Follow-up date & time *</Label>
-                <Input data-testid="followup-date-input" type="datetime-local" value={followupDate} onChange={(e) => setFollowupDate(e.target.value)} className="mt-1" />
-              </div>
-              <div>
-                <Label className="text-xs">Reason *</Label>
-                <Input data-testid="followup-reason-input" value={followupReason} onChange={(e) => setFollowupReason(e.target.value)} placeholder="e.g. candidate will confirm availability" className="mt-1" />
-              </div>
-            </div>
-          )}
-
           {needInterview && (
             <div className="grid gap-2 p-3 rounded-lg bg-blue-50 border border-blue-200">
               <p className="text-xs font-semibold text-blue-700">Interview details required</p>
@@ -129,7 +124,7 @@ export default function CallDispositionModal({ open, onOpenChange, lead, onDone 
                   <Label className="text-xs">Job *</Label>
                   <Select value={jobId} onValueChange={setJobId}>
                     <SelectTrigger data-testid="interview-job-select" className="mt-1"><SelectValue placeholder="Job" /></SelectTrigger>
-                    <SelectContent>{jobs.map((j) => <SelectItem key={j.id} value={j.id}>{j.title}</SelectItem>)}</SelectContent>
+                    <SelectContent>{jobs.filter((j) => !clientId || j.client_id === clientId).map((j) => <SelectItem key={j.id} value={j.id}>{j.title}</SelectItem>)}</SelectContent>
                   </Select>
                 </div>
               </div>
@@ -146,10 +141,25 @@ export default function CallDispositionModal({ open, onOpenChange, lead, onDone 
           <div>
             <Label className="text-xs">Update lead status (optional)</Label>
             <Select value={leadStatus} onValueChange={setLeadStatus}>
-              <SelectTrigger data-testid="lead-status-select" className="mt-1"><SelectValue placeholder="Keep current" /></SelectTrigger>
-              <SelectContent>{["Contacted", "Interested", "Follow-up", "Selected", "Lost"].map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
+              <SelectTrigger data-testid="lead-status-select" className="mt-1"><SelectValue placeholder="Keep current / auto" /></SelectTrigger>
+              <SelectContent>{statuses.map((s) => <SelectItem key={s} value={s}>{s}{isFinal(s) ? " (final)" : ""}</SelectItem>)}</SelectContent>
             </Select>
           </div>
+
+          {showFollowup && (
+            <div className="grid gap-2 p-3 rounded-lg bg-amber-50 border border-amber-200" data-testid="followup-section">
+              <p className="text-xs font-semibold text-amber-700">{mustFollowup ? "Callback follow-up required" : "Next follow-up required (lead is still active)"}</p>
+              <div>
+                <Label className="text-xs">Next follow-up date & time *</Label>
+                <Input data-testid="followup-date-input" type="datetime-local" value={followupDate} onChange={(e) => setFollowupDate(e.target.value)} className="mt-1" />
+              </div>
+              <div>
+                <Label className="text-xs">Reason {mustFollowup ? "*" : ""}</Label>
+                <Input data-testid="followup-reason-input" value={followupReason} onChange={(e) => setFollowupReason(e.target.value)} placeholder="e.g. candidate will confirm availability" className="mt-1" />
+              </div>
+            </div>
+          )}
+          {disposition && finalOutcome && <p className="text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-md px-3 py-2" data-testid="final-status-note">Lead will be closed as <b>{predicted}</b> — no further follow-up needed.</p>}
 
           {isSelected && (
             <div>
@@ -158,9 +168,9 @@ export default function CallDispositionModal({ open, onOpenChange, lead, onDone 
             </div>
           )}
 
-          {isLost && leadStatus === "Lost" && (
+          {needReason && (
             <div>
-              <Label className="text-xs">Lost reason *</Label>
+              <Label className="text-xs">Reason *</Label>
               <Select value={lostReason} onValueChange={setLostReason}>
                 <SelectTrigger data-testid="lost-reason-select" className="mt-1"><SelectValue placeholder="Select reason" /></SelectTrigger>
                 <SelectContent>{LOST_REASONS.map((r) => <SelectItem key={r} value={r}>{r}</SelectItem>)}</SelectContent>

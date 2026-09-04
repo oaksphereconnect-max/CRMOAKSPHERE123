@@ -3,7 +3,8 @@ import api from "@/lib/api";
 import { PageHeader, Loading, EmptyState } from "@/components/common";
 import { PriorityBadge, fmtDate } from "@/lib/ui";
 import CallDispositionModal from "@/components/CallDispositionModal";
-import LeadDrawer, { waLink } from "@/components/LeadDrawer";
+import LeadDrawer from "@/components/LeadDrawer";
+import WhatsAppModal from "@/components/WhatsAppModal";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { PhoneCall, MessageCircle, ListChecks } from "lucide-react";
@@ -25,6 +26,7 @@ export default function CallingList() {
   const [callOpen, setCallOpen] = useState(false);
   const [drawerId, setDrawerId] = useState(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [waLead, setWaLead] = useState(null);
 
   const load = useCallback(() => {
     setLeads(null);
@@ -53,14 +55,15 @@ export default function CallingList() {
               {l.next_followup_date && <span className="text-[11px] text-slate-400 hidden md:inline">{fmtDate(l.next_followup_date)}</span>}
               <div className="flex items-center gap-1 flex-shrink-0">
                 <Button size="sm" data-testid={`calling-call-${l.id}`} onClick={() => openCall(l)} className="bg-blue-600 hover:bg-blue-700 h-8"><PhoneCall className="w-4 h-4 sm:mr-1" /><span className="hidden sm:inline">Call</span></Button>
-                <a href={waLink(l.phone)} target="_blank" rel="noreferrer"><Button size="sm" variant="outline" className="text-emerald-600 border-emerald-200 h-8"><MessageCircle className="w-4 h-4" /></Button></a>
+                <Button size="sm" variant="outline" data-testid={`calling-wa-${l.id}`} onClick={() => setWaLead(l)} className="text-emerald-600 border-emerald-200 h-8"><MessageCircle className="w-4 h-4" /></Button>
               </div>
             </Card>
           ))}
         </div>
       )}
       <CallDispositionModal open={callOpen} onOpenChange={setCallOpen} lead={callLead} onDone={load} />
-      <LeadDrawer leadId={drawerId} open={drawerOpen} onOpenChange={setDrawerOpen} onCall={openCall} />
+      <LeadDrawer leadId={drawerId} open={drawerOpen} onOpenChange={setDrawerOpen} onCall={openCall} onChanged={load} />
+      <WhatsAppModal open={!!waLead} onOpenChange={(o) => !o && setWaLead(null)} lead={waLead} onDone={load} />
     </div>
   );
 }

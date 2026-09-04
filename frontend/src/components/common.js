@@ -27,14 +27,14 @@ export function EmptyState({ icon: Icon, title, subtitle }) {
   );
 }
 
-export function KpiCard({ label, value, sub, tone = "slate", icon: Icon, testid }) {
+export function KpiCard({ label, value, sub, tone = "slate", icon: Icon, testid, onClick }) {
   const tones = {
     slate: "text-slate-900 dark:text-slate-50",
     blue: "text-blue-600", green: "text-emerald-600", red: "text-rose-600",
     yellow: "text-amber-600",
   };
   return (
-    <Card className="p-4 rounded-xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm hover:shadow-md transition-shadow" data-testid={testid}>
+    <Card onClick={onClick} role={onClick ? "button" : undefined} className={`p-4 rounded-xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm transition-all ${onClick ? "cursor-pointer hover:shadow-md hover:-translate-y-0.5 hover:border-blue-300" : "hover:shadow-md"}`} data-testid={testid}>
       <div className="flex items-start justify-between">
         <div>
           <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">{label}</p>

@@ -161,8 +161,10 @@ DEFAULT_SETTINGS = {
     "sources": ["Meta Ads", "WorkIndia", "Facebook", "Instagram", "Website",
                 "WhatsApp", "Referral", "Manual", "Other"],
     "priorities": ["Hot", "High", "Medium", "Low", "Cold"],
-    "lead_statuses": ["New", "Contacted", "Interested", "Follow-up", "Interview",
-                      "Selected", "Joined", "Lost"],
+    "lead_statuses": ["New", "Attempted", "Contacted", "Interested", "Follow-up", "Interview",
+                      "Interview Attended", "Selected", "Joining Pending", "Joined",
+                      "Not Interested", "No Answer", "Wrong Number", "Duplicate", "Rejected",
+                      "Invalid Lead", "Closed", "Lost"],
     "interview_statuses": ["Pending", "Scheduled", "Tomorrow", "Today", "Attended",
                            "Not Attended", "Rescheduled", "Selected", "Rejected", "Dropped"],
     "joining_statuses": ["Selected", "Documents Pending", "Offer Pending", "Offer Released",
@@ -173,6 +175,41 @@ DEFAULT_SETTINGS = {
     "target_joinings_month": 30,
     "escalation_hours": 4,
 }
+FINAL_STATUSES = {"Selected", "Joined", "Rejected", "Not Interested", "Invalid Lead", "Closed",
+                  "Lost", "Duplicate", "Wrong Number"}
+CLOSED_STATUSES = {"Joined", "Lost", "Rejected", "Not Interested", "Invalid Lead", "Closed", "Duplicate", "Wrong Number"}
+DEFAULT_TAGS = [
+    ("Hot Lead", "#dc2626"), ("Warm Lead", "#f97316"), ("Cold Lead", "#64748b"), ("Fresh Lead", "#2563eb"),
+    ("Follow-up", "#d97706"), ("Interview Scheduled", "#4f46e5"), ("Interested", "#059669"),
+    ("Not Interested", "#9f1239"), ("No Answer", "#78716c"), ("Call Back", "#ca8a04"),
+    ("Documents Pending", "#7c3aed"), ("Selected", "#16a34a"), ("Joined", "#15803d"), ("Rejected", "#b91c1c"),
+]
+DEFAULT_WA_TEMPLATES = [
+    ("Initial Job Message", "Initial",
+     "Hi {{Candidate Name}},\nThis is {{Recruiter Name}} from OAKsphere Connect.\nWe have a job opportunity for {{Job Role}} at {{Location}} with salary up to {{Salary}}.\nPlease let me know if you are interested."),
+    ("Follow-Up Message", "Follow-up",
+     "Hi {{Candidate Name}},\nFollowing up regarding the {{Job Role}} opportunity we discussed.\nPlease let me know your availability for the next step."),
+    ("Interview Reminder", "Interview",
+     "Hi {{Candidate Name}},\nThis is a reminder for your interview scheduled on {{Interview Date}} at {{Interview Time}}.\nCompany: {{Company Name}}\nLocation: {{Location}}\nPlease confirm your attendance."),
+    ("No Answer Message", "No Answer",
+     "Hi {{Candidate Name}},\nI tried reaching you regarding a job opportunity.\nPlease call or WhatsApp me when you are available.\nRegards,\n{{Recruiter Name}}\nOAKsphere Connect"),
+    ("Selection Message", "Selection",
+     "Hi {{Candidate Name}},\nCongratulations! You have been selected for {{Job Role}}.\nOur team will contact you regarding the joining process."),
+]
+
+
+def is_final(status) -> bool:
+    return status in FINAL_STATUSES
+
+
+def can_touch_lead(user: dict, lead: dict):
+    if user["role"] == "recruiter" and lead.get("assigned_recruiter_id") != user["id"]:
+        raise HTTPException(403, "You can only update leads assigned to you")
+
+
+def has_pending_followup(lead: dict) -> bool:
+    fu = parse_dt(lead.get("next_followup_date"))
+    return bool(fu and fu >= now_utc())
 
 
 # ---------------- Auth Models ----------------
@@ -264,6 +301,7 @@ class UserCreate(BaseModel):
 
 class UserUpdate(BaseModel):
     name: Optional[str] = None
+    email: Optional[EmailStr] = None
     role: Optional[str] = None
     phone: Optional[str] = None
     active: Optional[bool] = None
@@ -303,10 +341,67 @@ async def update_user(uid: str, body: UserUpdate, user: dict = Depends(require_r
     upd = {k: v for k, v in body.model_dump().items() if v is not None}
     if not upd:
         raise HTTPException(400, "Nothing to update")
+    if "email" in upd:
+        upd["email"] = upd["email"].lower()
+        if await db.users.find_one({"email": upd["email"], "id": {"$ne": uid}}):
+            raise HTTPException(400, "Email already registered")
+    target = await db.users.find_one({"id": uid})
+    if not target:
+        raise HTTPException(404, "User not found")
+    if target["role"] == "admin" and upd.get("active") is False:
+        raise HTTPException(400, "Admin account cannot be deactivated")
     await db.users.update_one({"id": uid}, {"$set": upd})
+    await log_audit("user", uid, "update", "", ",".join(upd.keys()), user)
     u = clean(await db.users.find_one({"id": uid}))
     u.pop("password_hash", None)
     return u
+
+
+async def transfer_all_leads(from_id: str, to_id: str, actor: dict) -> int:
+    to_user = await db.users.find_one({"id": to_id})
+    if not to_user:
+        raise HTTPException(404, "Target recruiter not found")
+    leads = await db.leads.find({"assigned_recruiter_id": from_id}).to_list(5000)
+    for lead in leads:
+        hist = lead.get("assignment_history", [])
+        hist.append({"recruiter_id": to_id, "by": actor["name"], "at": iso(now_utc()),
+                     "action": "transferred", "from": from_id})
+        await db.leads.update_one({"id": lead["id"]}, {"$set": {
+            "assigned_recruiter_id": to_id, "assignment_history": hist,
+            "updated_at": iso(now_utc()), "updated_by": actor["name"]}})
+        await log_activity(lead["id"], "transfer", f"Lead transferred to {to_user['name']}", actor)
+    await db.followups.update_many({"recruiter_id": from_id, "status": "pending"}, {"$set": {"recruiter_id": to_id}})
+    if leads:
+        await notify(to_id, "lead_assigned", f"{len(leads)} lead(s) transferred to you")
+    return len(leads)
+
+
+@api.post("/users/{uid}/transfer-leads")
+async def transfer_leads(uid: str, body: dict, user: dict = Depends(require_role("admin", "team_leader"))):
+    to_id = body.get("to_recruiter_id")
+    if not to_id or to_id == uid:
+        raise HTTPException(400, "Select a different recruiter to transfer leads to")
+    n = await transfer_all_leads(uid, to_id, user)
+    await log_audit("user", uid, "transfer_leads", uid, to_id, user)
+    return {"ok": True, "transferred": n}
+
+
+@api.delete("/users/{uid}")
+async def delete_user(uid: str, transfer_to: Optional[str] = None, user: dict = Depends(require_role("admin"))):
+    target = await db.users.find_one({"id": uid})
+    if not target:
+        raise HTTPException(404, "User not found")
+    if target["role"] == "admin" or uid == user["id"]:
+        raise HTTPException(400, "Admin account cannot be deleted")
+    lead_count = await db.leads.count_documents({"assigned_recruiter_id": uid})
+    if lead_count and not transfer_to:
+        raise HTTPException(400, f"This user has {lead_count} assigned lead(s). Choose who should receive them first.")
+    if lead_count:
+        await transfer_all_leads(uid, transfer_to, user)
+    await db.users.update_many({"team_leader_id": uid}, {"$set": {"team_leader_id": None}})
+    await db.users.delete_one({"id": uid})
+    await log_audit("user", uid, "deleted", target["name"], "", user)
+    return {"ok": True, "transferred": lead_count}
 
 
 @api.post("/users/{uid}/reset-password")
@@ -442,18 +537,180 @@ async def delete_job(jid: str, user: dict = Depends(require_role("admin"))):
     return {"ok": True}
 
 
+# ---------------- Tags ----------------
+@api.get("/tags")
+async def list_tags(user: dict = Depends(get_current_user)):
+    tags = await db.tags.find().sort("name", 1).to_list(500)
+    out = []
+    for t in tags:
+        t = clean(t)
+        t["lead_count"] = await db.leads.count_documents({"tags": t["id"]})
+        out.append(t)
+    return out
+
+
+@api.post("/tags")
+async def create_tag(body: dict, user: dict = Depends(require_role("admin"))):
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "Tag name is required")
+    if await db.tags.find_one({"name": {"$regex": f"^{name}$", "$options": "i"}}):
+        raise HTTPException(400, "Tag already exists")
+    doc = {"id": new_id(), "name": name, "color": body.get("color") or "#2563eb", "created_at": iso(now_utc())}
+    await db.tags.insert_one(dict(doc))
+    return doc
+
+
+@api.patch("/tags/{tid}")
+async def update_tag(tid: str, body: dict, user: dict = Depends(require_role("admin"))):
+    upd = {k: v for k, v in body.items() if k in ("name", "color") and v}
+    if not upd:
+        raise HTTPException(400, "Nothing to update")
+    await db.tags.update_one({"id": tid}, {"$set": upd})
+    t = await db.tags.find_one({"id": tid})
+    if not t:
+        raise HTTPException(404, "Tag not found")
+    return clean(t)
+
+
+@api.delete("/tags/{tid}")
+async def delete_tag(tid: str, user: dict = Depends(require_role("admin"))):
+    await db.tags.delete_one({"id": tid})
+    await db.leads.update_many({"tags": tid}, {"$pull": {"tags": tid}})
+    return {"ok": True}
+
+
+@api.post("/leads/{lid}/tags")
+async def set_lead_tags(lid: str, body: dict, user: dict = Depends(get_current_user)):
+    lead = await db.leads.find_one({"id": lid})
+    if not lead:
+        raise HTTPException(404, "Lead not found")
+    can_touch_lead(user, lead)
+    tag_ids = list(dict.fromkeys(body.get("tag_ids") or []))
+    tags = {t["id"]: t["name"] for t in await db.tags.find({"id": {"$in": tag_ids}}).to_list(500)}
+    tag_ids = [t for t in tag_ids if t in tags]
+    old = set(lead.get("tags") or [])
+    added = [tags[t] for t in tag_ids if t not in old]
+    removed_ids = [t for t in old if t not in tag_ids]
+    if removed_ids:
+        old_tags = {t["id"]: t["name"] for t in await db.tags.find({"id": {"$in": removed_ids}}).to_list(500)}
+        removed = [old_tags.get(t, "?") for t in removed_ids]
+    else:
+        removed = []
+    await db.leads.update_one({"id": lid}, {"$set": {"tags": tag_ids, "updated_at": iso(now_utc()), "updated_by": user["name"]}})
+    if added:
+        await log_activity(lid, "tag", f"Tag(s) added: {', '.join(added)}", user)
+    if removed:
+        await log_activity(lid, "tag", f"Tag(s) removed: {', '.join(removed)}", user)
+    return await enrich_lead(await db.leads.find_one({"id": lid}))
+
+
+# ---------------- WhatsApp Templates ----------------
+@api.get("/wa-templates")
+async def list_wa_templates(user: dict = Depends(get_current_user)):
+    return [clean(t) for t in await db.wa_templates.find().sort("created_at", 1).to_list(500)]
+
+
+@api.post("/wa-templates")
+async def create_wa_template(body: dict, user: dict = Depends(require_role("admin"))):
+    if not body.get("name") or not body.get("body"):
+        raise HTTPException(400, "Template name and message are required")
+    doc = {"id": new_id(), "name": body["name"].strip(), "category": body.get("category") or "General",
+           "body": body["body"], "created_at": iso(now_utc())}
+    await db.wa_templates.insert_one(dict(doc))
+    return doc
+
+
+@api.patch("/wa-templates/{tid}")
+async def update_wa_template(tid: str, body: dict, user: dict = Depends(require_role("admin"))):
+    upd = {k: v for k, v in body.items() if k in ("name", "category", "body")}
+    if not upd:
+        raise HTTPException(400, "Nothing to update")
+    await db.wa_templates.update_one({"id": tid}, {"$set": upd})
+    t = await db.wa_templates.find_one({"id": tid})
+    if not t:
+        raise HTTPException(404, "Template not found")
+    return clean(t)
+
+
+@api.delete("/wa-templates/{tid}")
+async def delete_wa_template(tid: str, user: dict = Depends(require_role("admin"))):
+    await db.wa_templates.delete_one({"id": tid})
+    return {"ok": True}
+
+
+@api.post("/leads/{lid}/whatsapp")
+async def log_whatsapp(lid: str, body: dict, user: dict = Depends(get_current_user)):
+    lead = await db.leads.find_one({"id": lid})
+    if not lead:
+        raise HTTPException(404, "Lead not found")
+    can_touch_lead(user, lead)
+    tpl = body.get("template_name") or "Custom message"
+    await log_activity(lid, "whatsapp", f"WhatsApp sent ({tpl}): {(body.get('message') or '')[:160]}", user)
+    await db.leads.update_one({"id": lid}, {"$set": {"last_touched_at": iso(now_utc()), "last_contact_date": iso(now_utc())}})
+    return {"ok": True}
+
+
+# ---------------- Lead Notes ----------------
+@api.post("/leads/{lid}/notes")
+async def add_note(lid: str, body: dict, user: dict = Depends(get_current_user)):
+    lead = await db.leads.find_one({"id": lid})
+    if not lead:
+        raise HTTPException(404, "Lead not found")
+    can_touch_lead(user, lead)
+    text = (body.get("text") or "").strip()
+    if not text:
+        raise HTTPException(400, "Note cannot be empty")
+    doc = {"id": new_id(), "lead_id": lid, "text": text, "author_id": user["id"], "author_name": user["name"],
+           "created_at": iso(now_utc()), "updated_at": None}
+    await db.lead_notes.insert_one(dict(doc))
+    await log_activity(lid, "note", f"Note added: {text[:160]}", user)
+    return doc
+
+
+@api.patch("/leads/{lid}/notes/{nid}")
+async def edit_note(lid: str, nid: str, body: dict, user: dict = Depends(get_current_user)):
+    note = await db.lead_notes.find_one({"id": nid, "lead_id": lid})
+    if not note:
+        raise HTTPException(404, "Note not found")
+    if user["role"] != "admin" and note["author_id"] != user["id"]:
+        raise HTTPException(403, "You can only edit your own notes")
+    text = (body.get("text") or "").strip()
+    if not text:
+        raise HTTPException(400, "Note cannot be empty")
+    await db.lead_notes.update_one({"id": nid}, {"$set": {"text": text, "updated_at": iso(now_utc())}})
+    await log_activity(lid, "note", f"Note edited: {text[:160]}", user)
+    return clean(await db.lead_notes.find_one({"id": nid}))
+
+
+@api.delete("/leads/{lid}/notes/{nid}")
+async def delete_note(lid: str, nid: str, user: dict = Depends(get_current_user)):
+    note = await db.lead_notes.find_one({"id": nid, "lead_id": lid})
+    if not note:
+        raise HTTPException(404, "Note not found")
+    if user["role"] != "admin" and note["author_id"] != user["id"]:
+        raise HTTPException(403, "You can only delete your own notes")
+    await db.lead_notes.delete_one({"id": nid})
+    await log_activity(lid, "note", "Note deleted", user)
+    return {"ok": True}
+
+
 # ---------------- Leads ----------------
 async def enrich_lead(lead, name_maps=None):
     lead = clean(lead)
     if name_maps:
-        recs, clients, jobs = name_maps
+        recs, clients, jobs, tags = name_maps
     else:
         recs = {u["id"]: u["name"] for u in await db.users.find().to_list(1000)}
         clients = {c["id"]: c["name"] for c in await db.clients.find().to_list(1000)}
         jobs = {j["id"]: j.get("title") for j in await db.jobs.find().to_list(1000)}
+        tags = {t["id"]: t for t in await db.tags.find().to_list(500)}
     lead["recruiter_name"] = recs.get(lead.get("assigned_recruiter_id"), "Unassigned")
     lead["client_name"] = clients.get(lead.get("client_id"), None)
     lead["job_title"] = jobs.get(lead.get("job_id"), None)
+    lead["tags"] = lead.get("tags") or []
+    lead["tag_details"] = [{"id": t, "name": tags[t]["name"], "color": tags[t].get("color")} for t in lead["tags"] if t in tags]
+    lead["is_final"] = is_final(lead.get("lead_status"))
     # aging bucket
     created = parse_dt(lead.get("created_at"))
     days = (now_utc() - created).days if created else 0
@@ -480,10 +737,14 @@ def apply_saved_view(view, leads):
         "new_leads": lambda l: l.get("lead_status") == "New",
         "not_called": lambda l: (l.get("call_attempts", 0) == 0),
         "todays_followups": lambda l: fu(l) and fu(l).date() == today,
-        "overdue_followups": lambda l: fu(l) and fu(l) < now and l.get("lead_status") not in ("Joined", "Lost"),
+        "overdue_followups": lambda l: fu(l) and fu(l) < now and l.get("lead_status") not in CLOSED_STATUSES,
         "hot_leads": lambda l: l.get("priority") == "Hot",
+        "no_answer": lambda l: l.get("last_call_status") == "No Answer" and l.get("lead_status") not in CLOSED_STATUSES,
+        "interested": lambda l: l.get("lead_status") == "Interested",
+        "interviews": lambda l: l.get("interview_status") in ("Scheduled", "Today", "Tomorrow"),
         "selected": lambda l: l.get("lead_status") == "Selected",
         "joined": lambda l: l.get("lead_status") == "Joined",
+        "rejected": lambda l: l.get("lead_status") in ("Rejected", "Lost"),
         "lost": lambda l: l.get("lead_status") == "Lost",
         "attendance_pending": lambda l: l.get("interview_status") in ("Scheduled", "Today", "Tomorrow"),
         "joining_this_week": lambda l: parse_dt(l.get("expected_joining_date")) and now <= parse_dt(l.get("expected_joining_date")) <= week_end,
@@ -500,6 +761,7 @@ async def list_leads(
     recruiter_id: Optional[str] = None, client_id: Optional[str] = None,
     job_id: Optional[str] = None, view: Optional[str] = None,
     aging: Optional[str] = None, mine: Optional[bool] = False,
+    tag: Optional[str] = None,
 ):
     q: Dict[str, Any] = {}
     scope = await scope_recruiter_ids(user)
@@ -514,14 +776,16 @@ async def list_leads(
     if lead_status: q["lead_status"] = lead_status
     if client_id: q["client_id"] = client_id
     if job_id: q["job_id"] = job_id
+    if tag: q["tags"] = tag
     if search:
         rx = {"$regex": search, "$options": "i"}
-        q["$or"] = [{"name": rx}, {"phone": rx}, {"alt_phone": rx}, {"email": rx}, {"lead_code": rx}]
+        q["$or"] = [{"name": rx}, {"phone": rx}, {"alt_phone": rx}, {"email": rx}, {"lead_code": rx}, {"city": rx}]
     leads = await db.leads.find(q).sort("created_at", -1).to_list(2000)
     name_maps = (
         {u["id"]: u["name"] for u in await db.users.find().to_list(1000)},
         {c["id"]: c["name"] for c in await db.clients.find().to_list(1000)},
         {j["id"]: j.get("title") for j in await db.jobs.find().to_list(1000)},
+        {t["id"]: t for t in await db.tags.find().to_list(500)},
     )
     out = [await enrich_lead(l, name_maps) for l in leads]
     if view:
@@ -602,12 +866,17 @@ async def create_lead(body: dict, user: dict = Depends(get_current_user)):
         "phone_valid": validate_phone(phone),
         "duplicate_flag": bool(dup),
         "assignment_history": [],
+        "tags": [t for t in (body.get("tags") or []) if isinstance(t, str)],
         "is_demo": False,
         "created_at": iso(now_utc()),
         "updated_at": iso(now_utc()),
         "updated_by": user["name"],
         "last_touched_at": None,
+        "last_contact_date": None,
     }
+    if body.get("next_followup_date"):
+        doc["next_followup_date"] = body["next_followup_date"]
+        doc["next_followup_reason"] = body.get("next_followup_reason") or "Initial follow-up"
     if doc["assigned_recruiter_id"]:
         doc["assignment_history"].append({
             "recruiter_id": doc["assigned_recruiter_id"], "by": user["name"],
@@ -616,6 +885,16 @@ async def create_lead(body: dict, user: dict = Depends(get_current_user)):
         await notify(doc["assigned_recruiter_id"], "lead_assigned", f"New lead assigned: {doc['name']}")
     await db.leads.insert_one(dict(doc))
     await log_activity(doc["id"], "created", f"Lead created by {user['name']}", user)
+    if doc["assigned_recruiter_id"]:
+        rec = await db.users.find_one({"id": doc["assigned_recruiter_id"]})
+        await log_activity(doc["id"], "assigned", f"Assigned to {rec['name'] if rec else 'recruiter'}", user)
+    if doc.get("next_followup_date"):
+        await db.followups.insert_one({
+            "id": new_id(), "lead_id": doc["id"], "recruiter_id": doc["assigned_recruiter_id"] or user["id"],
+            "due_date": doc["next_followup_date"], "reason": doc["next_followup_reason"],
+            "status": "pending", "created_at": iso(now_utc()), "completed_at": None, "escalated": False,
+        })
+        await log_activity(doc["id"], "followup", f"Follow-up scheduled for {fmt_dt(doc['next_followup_date'])}", user)
     return await enrich_lead(doc)
 
 
@@ -631,7 +910,32 @@ async def get_lead(lid: str, user: dict = Depends(get_current_user)):
 async def lead_activities(lid: str, user: dict = Depends(get_current_user)):
     acts = await db.lead_activities.find({"lead_id": lid}).sort("created_at", -1).to_list(500)
     calls = await db.call_logs.find({"lead_id": lid}).sort("created_at", -1).to_list(500)
-    return {"activities": [clean(a) for a in acts], "calls": [clean(c) for c in calls]}
+    notes = await db.lead_notes.find({"lead_id": lid}).sort("created_at", -1).to_list(500)
+    fus = await db.followups.find({"lead_id": lid}).sort("due_date", -1).to_list(500)
+    return {"activities": [clean(a) for a in acts], "calls": [clean(c) for c in calls],
+            "notes": [clean(n) for n in notes], "followups": [clean(f) for f in fus]}
+
+
+async def schedule_followup(lead: dict, due: str, reason: str, actor: dict):
+    await db.followups.update_many({"lead_id": lead["id"], "status": "pending"},
+                                   {"$set": {"status": "superseded", "completed_at": iso(now_utc())}})
+    await db.followups.insert_one({
+        "id": new_id(), "lead_id": lead["id"], "recruiter_id": lead.get("assigned_recruiter_id") or actor["id"],
+        "due_date": due, "reason": reason or "", "status": "pending",
+        "created_at": iso(now_utc()), "completed_at": None, "escalated": False, "created_by": actor["name"],
+    })
+    await log_activity(lead["id"], "followup", f"Follow-up scheduled for {fmt_dt(due)}: {reason or ''}", actor)
+
+
+def fmt_dt(s) -> str:
+    dt = parse_dt(s)
+    return dt.strftime("%d %b %Y %H:%M UTC") if dt else str(s)
+
+
+LEAD_EDIT_FIELDS = ("name", "phone", "alt_phone", "email", "city", "age", "gender", "qualification", "experience",
+                    "current_salary", "expected_salary", "notice_period", "source", "priority", "client_id", "job_id",
+                    "notes", "lead_status", "interview_status", "joining_status", "expected_joining_date",
+                    "lost_reason", "assigned_recruiter_id", "next_followup_date", "next_followup_reason", "tags")
 
 
 @api.patch("/leads/{lid}")
@@ -639,14 +943,51 @@ async def update_lead(lid: str, body: dict, user: dict = Depends(get_current_use
     lead = await db.leads.find_one({"id": lid})
     if not lead:
         raise HTTPException(404, "Lead not found")
-    body.pop("id", None)
-    for f in ("recruiter_name", "client_name", "job_title", "aging", "age_days"):
-        body.pop(f, None)
-    # track key state changes
+    can_touch_lead(user, lead)
+    body = {k: v for k, v in body.items() if k in LEAD_EDIT_FIELDS}
+    if "assigned_recruiter_id" in body and user["role"] == "recruiter":
+        body.pop("assigned_recruiter_id")
+    new_status = body.get("lead_status", lead.get("lead_status"))
+    status_changed = "lead_status" in body and body["lead_status"] != lead.get("lead_status")
+    followup_in = body.get("next_followup_date")
+
+    # ---- Follow-up enforcement: active leads must always carry a next follow-up ----
+    if status_changed and not is_final(new_status) and not followup_in and not has_pending_followup(lead):
+        raise HTTPException(400, "Next follow-up date is required until the lead reaches a final status (Selected / Joined / Rejected / Not Interested / Invalid Lead / Closed)")
+    if status_changed and new_status == "Selected" and not (body.get("expected_joining_date") or lead.get("expected_joining_date")):
+        raise HTTPException(400, "Selected requires an expected joining date")
+    if status_changed and new_status in ("Lost", "Rejected", "Not Interested") and not (body.get("lost_reason") or lead.get("lost_reason")):
+        raise HTTPException(400, f"{new_status} requires a reason")
+    if "phone" in body:
+        body["phone"] = (body["phone"] or "").strip()
+        body["phone_valid"] = validate_phone(body["phone"])
+        body["duplicate_flag"] = bool(await find_phone_matches(body["phone"], exclude_id=lid))
+
     for key in ("lead_status", "priority", "interview_status", "joining_status"):
         if key in body and body[key] != lead.get(key):
             await log_audit("lead", lid, key, lead.get(key), body[key], user)
-            await log_activity(lid, "status_change", f"{key} changed to {body[key]}", user)
+            await log_activity(lid, "status_change", f"{key.replace('_', ' ').title()} changed: {lead.get(key) or '—'} → {body[key]}", user)
+    if "assigned_recruiter_id" in body and body["assigned_recruiter_id"] != lead.get("assigned_recruiter_id"):
+        rec = await db.users.find_one({"id": body["assigned_recruiter_id"]})
+        hist = lead.get("assignment_history", [])
+        hist.append({"recruiter_id": body["assigned_recruiter_id"], "by": user["name"], "at": iso(now_utc()),
+                     "action": "reassigned", "from": lead.get("assigned_recruiter_id")})
+        body["assignment_history"] = hist
+        await log_activity(lid, "assigned", f"Recruiter assigned: {rec['name'] if rec else 'Unassigned'}", user)
+        if rec:
+            await notify(rec["id"], "lead_assigned", f"Lead assigned to you: {lead['name']}")
+    changed_fields = [k for k in body if k in LEAD_EDIT_FIELDS and k not in
+                      ("lead_status", "priority", "interview_status", "joining_status", "assigned_recruiter_id",
+                       "next_followup_date", "next_followup_reason", "tags") and body[k] != lead.get(k)]
+    if changed_fields:
+        await log_activity(lid, "edited", f"Lead details updated: {', '.join(changed_fields)}", user)
+    if followup_in and followup_in != lead.get("next_followup_date"):
+        await schedule_followup(lead, followup_in, body.get("next_followup_reason") or "", user)
+    if status_changed and is_final(new_status):
+        body["next_followup_date"] = None
+        body["next_followup_reason"] = None
+        await db.followups.update_many({"lead_id": lid, "status": "pending"},
+                                       {"$set": {"status": "completed", "completed_at": iso(now_utc())}})
     body["updated_at"] = iso(now_utc())
     body["updated_by"] = user["name"]
     await db.leads.update_one({"id": lid}, {"$set": body})
@@ -655,7 +996,13 @@ async def update_lead(lid: str, body: dict, user: dict = Depends(get_current_use
 
 @api.delete("/leads/{lid}")
 async def delete_lead(lid: str, user: dict = Depends(require_role("admin"))):
+    lead = await db.leads.find_one({"id": lid})
+    if not lead:
+        raise HTTPException(404, "Lead not found")
     await db.leads.delete_one({"id": lid})
+    for coll in (db.followups, db.interviews, db.joinings, db.lead_activities, db.call_logs, db.lead_notes):
+        await coll.delete_many({"lead_id": lid})
+    await log_audit("lead", lid, "deleted", f"{lead.get('name')} {lead.get('phone')}", "", user)
     return {"ok": True}
 
 
@@ -678,7 +1025,9 @@ async def assign_leads(body: dict, user: dict = Depends(require_role("admin", "t
         if not lead.get("original_recruiter_id"):
             upd["original_recruiter_id"] = recruiter_id
         await db.leads.update_one({"id": lid}, {"$set": upd})
+        await db.followups.update_many({"lead_id": lid, "status": "pending"}, {"$set": {"recruiter_id": recruiter_id}})
         await log_audit("lead", lid, "assigned_recruiter_id", lead.get("assigned_recruiter_id"), recruiter_id, user)
+        await log_activity(lid, "assigned", f"Recruiter assigned: {rec['name'] if rec else recruiter_id}", user)
         await notify(recruiter_id, "lead_assigned", f"Lead assigned to you: {lead['name']}")
     return {"ok": True, "assigned": len(lead_ids), "recruiter": rec["name"] if rec else None}
 
@@ -697,7 +1046,7 @@ async def auto_distribute(body: dict, user: dict = Depends(require_role("admin",
     workload = {}
     for r in recruiters:
         workload[r["id"]] = await db.leads.count_documents({
-            "assigned_recruiter_id": r["id"], "lead_status": {"$nin": ["Joined", "Lost"]}})
+            "assigned_recruiter_id": r["id"], "lead_status": {"$nin": list(CLOSED_STATUSES)}})
     # sort leads by priority so hot ones spread across recruiters
     prio_rank = {"Hot": 0, "High": 1, "Medium": 2, "Low": 3, "Cold": 4}
     leads.sort(key=lambda l: prio_rank.get(l.get("priority"), 5))
@@ -711,6 +1060,7 @@ async def auto_distribute(body: dict, user: dict = Depends(require_role("admin",
         if not lead.get("original_recruiter_id"):
             upd["original_recruiter_id"] = target
         await db.leads.update_one({"id": lead["id"]}, {"$set": upd})
+        await log_activity(lead["id"], "assigned", f"Auto-assigned to {next(r['name'] for r in recruiters if r['id'] == target)}", user)
         await notify(target, "lead_assigned", f"Auto-assigned lead: {lead['name']}")
         workload[target] += 1
         assigned += 1
@@ -763,6 +1113,7 @@ async def log_call(lid: str, body: dict, user: dict = Depends(get_current_user))
     lead = await db.leads.find_one({"id": lid})
     if not lead:
         raise HTTPException(404, "Lead not found")
+    can_touch_lead(user, lead)
     disposition = body.get("disposition")
     notes = body.get("notes", "")
     connected = disposition in CONNECTED_DISPOSITIONS
@@ -776,8 +1127,15 @@ async def log_call(lid: str, body: dict, user: dict = Depends(get_current_user))
             raise HTTPException(400, "Interview Scheduled requires date/time, client and job")
     if body.get("lead_status") == "Selected" and not body.get("expected_joining_date"):
         raise HTTPException(400, "Selected requires an expected joining date")
-    if body.get("lead_status") == "Lost" and not body.get("lost_reason"):
-        raise HTTPException(400, "Lost requires a lost reason")
+    if body.get("lead_status") in ("Lost", "Rejected", "Not Interested") and not body.get("lost_reason"):
+        raise HTTPException(400, f"{body.get('lead_status')} requires a reason")
+    # Predict the resulting status to enforce the follow-up rule
+    auto_status = {"Not Interested": "Not Interested", "Invalid Number": "Invalid Lead"}
+    predicted = body.get("lead_status") or auto_status.get(disposition) or lead.get("lead_status")
+    if disposition == "Interview Scheduled":
+        predicted = "Interview"
+    if not is_final(predicted) and not body.get("followup_date") and not has_pending_followup(lead) and disposition != "Interview Scheduled":
+        raise HTTPException(400, "Next follow-up date is required — every active lead must have a follow-up until it reaches a final status")
 
     # ---- Call log ----
     await db.call_logs.insert_one({
@@ -796,19 +1154,25 @@ async def log_call(lid: str, body: dict, user: dict = Depends(get_current_user))
         "updated_at": iso(now_utc()),
         "updated_by": user["name"],
     }
+    if connected:
+        upd["last_contact_date"] = iso(now_utc())
 
     # derive lead status
     status_map = {
         "Connected–Interested": "Interested",
-        "Not Interested": "Contacted",
+        "Not Interested": "Not Interested",
         "Already Working": "Contacted",
         "Salary Issue": "Follow-up", "Location Issue": "Follow-up", "Job Mismatch": "Follow-up",
         "Callback Requested": "Follow-up", "Call Back Later": "Follow-up",
+        "No Answer": "Attempted", "Busy": "Attempted", "Switched Off": "Attempted",
+        "Unreachable": "Attempted", "WhatsApp Only": "Attempted",
     }
-    if disposition in status_map and lead.get("lead_status") == "New":
-        upd["lead_status"] = status_map[disposition]
-    elif disposition in status_map:
-        upd["lead_status"] = status_map[disposition]
+    if disposition in status_map:
+        if disposition in NOT_CONNECTED_DISPOSITIONS:
+            if lead.get("lead_status") == "New":
+                upd["lead_status"] = status_map[disposition]
+        else:
+            upd["lead_status"] = status_map[disposition]
 
     if body.get("lead_status"):
         upd["lead_status"] = body["lead_status"]
@@ -816,19 +1180,18 @@ async def log_call(lid: str, body: dict, user: dict = Depends(get_current_user))
         upd["priority"] = body["priority"]
     if disposition == "Invalid Number":
         upd["phone_valid"] = False
-        upd["lead_status"] = "Lost"
+        upd["lead_status"] = "Invalid Lead"
         upd["lost_reason"] = "Invalid Number"
+    if disposition == "Not Interested" and not body.get("lost_reason"):
+        upd["lost_reason"] = "Not Interested"
 
     # follow-up
     if body.get("followup_date"):
         upd["next_followup_date"] = body["followup_date"]
         upd["next_followup_reason"] = body.get("followup_reason", "")
-        upd["lead_status"] = upd.get("lead_status", lead.get("lead_status"))
-        await db.followups.insert_one({
-            "id": new_id(), "lead_id": lid, "recruiter_id": lead.get("assigned_recruiter_id") or user["id"],
-            "due_date": body["followup_date"], "reason": body.get("followup_reason", ""),
-            "status": "pending", "created_at": iso(now_utc()), "completed_at": None, "escalated": False,
-        })
+        await schedule_followup(lead, body["followup_date"], body.get("followup_reason", ""), user)
+    elif has_pending_followup(lead) and not is_final(upd.get("lead_status", lead.get("lead_status"))):
+        pass  # keep existing pending follow-up
 
     # interview
     if disposition == "Interview Scheduled":
@@ -848,41 +1211,66 @@ async def log_call(lid: str, body: dict, user: dict = Depends(get_current_user))
     # lost
     if body.get("lost_reason"):
         upd["lost_reason"] = body["lost_reason"]
-        upd["lead_status"] = "Lost"
+        if not body.get("lead_status"):
+            upd["lead_status"] = "Lost"
 
     # selected / joining
     if body.get("expected_joining_date"):
         upd["expected_joining_date"] = body["expected_joining_date"]
 
+    final_status = upd.get("lead_status", lead.get("lead_status"))
+    if is_final(final_status):
+        upd["next_followup_date"] = None
+        upd["next_followup_reason"] = None
+        await db.followups.update_many({"lead_id": lid, "status": "pending"},
+                                       {"$set": {"status": "completed", "completed_at": iso(now_utc())}})
+
     await db.leads.update_one({"id": lid}, {"$set": upd})
     if upd.get("lead_status") and upd["lead_status"] != lead.get("lead_status"):
         await log_audit("lead", lid, "lead_status", lead.get("lead_status"), upd["lead_status"], user)
+        await log_activity(lid, "status_change", f"Lead Status changed: {lead.get('lead_status')} → {upd['lead_status']}", user)
     return await enrich_lead(await db.leads.find_one({"id": lid}))
 
 
 # ---------------- Follow-ups ----------------
+FOLLOWUP_VIEWS = ("today", "overdue", "tomorrow", "upcoming", "completed", "missed", "all")
+
+
 @api.get("/followups")
-async def get_followups(view: str = "today", user: dict = Depends(get_current_user)):
+async def get_followups(view: str = "today", search: Optional[str] = None,
+                        recruiter_id: Optional[str] = None, user: dict = Depends(get_current_user)):
     scope = await scope_recruiter_ids(user)
     q = {} if scope is None else {"recruiter_id": {"$in": scope}}
-    fus = await db.followups.find(q).sort("due_date", 1).to_list(2000)
+    if recruiter_id:
+        q["recruiter_id"] = recruiter_id
+    q["status"] = {"$ne": "superseded"}
+    fus = await db.followups.find(q).sort("due_date", 1).to_list(3000)
     now = now_utc()
     today = now.date()
+    tomorrow = today + timedelta(days=1)
     recs = {u["id"]: u["name"] for u in await db.users.find().to_list(1000)}
+    lead_ids = list({f["lead_id"] for f in fus})
+    leads = {l["id"]: l for l in await db.leads.find({"id": {"$in": lead_ids}}).to_list(5000)}
     out = []
     for f in fus:
         f = clean(f)
-        lead = await db.leads.find_one({"id": f["lead_id"]})
+        lead = leads.get(f["lead_id"])
         if not lead:
             continue
+        if search:
+            s = search.lower()
+            if s not in (lead.get("name") or "").lower() and s not in (lead.get("phone") or "") and s not in (f.get("reason") or "").lower():
+                continue
         due = parse_dt(f["due_date"])
         f["recruiter_name"] = recs.get(f["recruiter_id"], "—")
         f["lead_name"] = lead["name"]
         f["phone"] = lead["phone"]
         f["priority"] = lead.get("priority")
+        f["lead_status"] = lead.get("lead_status")
         f["lead_id"] = lead["id"]
         completed = f["status"] == "completed"
-        overdue = due and due < now and not completed
+        overdue = bool(due and due < now and not completed)
+        f["is_overdue"] = overdue
         if overdue:
             delta = now - due
             hours = int(delta.total_seconds() // 3600)
@@ -890,20 +1278,115 @@ async def get_followups(view: str = "today", user: dict = Depends(get_current_us
         matched = {
             "today": (due and due.date() == today and not completed),
             "overdue": overdue,
+            "tomorrow": (due and due.date() == tomorrow and not completed),
             "upcoming": (due and due.date() > today and not completed),
             "completed": completed,
+            "missed": (due and due.date() < today and not completed),
+            "all": True,
         }.get(view, False)
         if matched:
             out.append(f)
+    if view == "completed":
+        out.sort(key=lambda x: x.get("completed_at") or "", reverse=True)
     return out
 
 
-@api.post("/followups/{fid}/complete")
-async def complete_followup(fid: str, user: dict = Depends(get_current_user)):
-    await db.followups.update_one({"id": fid}, {"$set": {"status": "completed", "completed_at": iso(now_utc())}})
+@api.get("/followups/counts")
+async def followup_counts(user: dict = Depends(get_current_user)):
+    counts = {}
+    for v in ("today", "overdue", "tomorrow", "upcoming", "completed", "missed"):
+        counts[v] = len(await get_followups(view=v, user=user))
+    return counts
+
+
+@api.post("/followups")
+async def create_followup(body: dict, user: dict = Depends(get_current_user)):
+    lead = await db.leads.find_one({"id": body.get("lead_id")})
+    if not lead:
+        raise HTTPException(404, "Lead not found")
+    can_touch_lead(user, lead)
+    if not body.get("due_date"):
+        raise HTTPException(400, "Follow-up date & time is required")
+    await schedule_followup(lead, body["due_date"], body.get("reason") or "", user)
+    upd = {"next_followup_date": body["due_date"], "next_followup_reason": body.get("reason") or "",
+           "updated_at": iso(now_utc()), "updated_by": user["name"]}
+    if lead.get("lead_status") in ("New", "Attempted", "Contacted"):
+        upd["lead_status"] = "Follow-up"
+    await db.leads.update_one({"id": lead["id"]}, {"$set": upd})
+    return await enrich_lead(await db.leads.find_one({"id": lead["id"]}))
+
+
+@api.patch("/followups/{fid}")
+async def reschedule_followup(fid: str, body: dict, user: dict = Depends(get_current_user)):
     f = await db.followups.find_one({"id": fid})
-    if f:
-        await db.leads.update_one({"id": f["lead_id"]}, {"$set": {"next_followup_date": None, "next_followup_reason": None}})
+    if not f:
+        raise HTTPException(404, "Follow-up not found")
+    lead = await db.leads.find_one({"id": f["lead_id"]})
+    if lead:
+        can_touch_lead(user, lead)
+    upd = {k: v for k, v in body.items() if k in ("due_date", "reason")}
+    if not upd:
+        raise HTTPException(400, "Nothing to update")
+    await db.followups.update_one({"id": fid}, {"$set": upd})
+    if lead and f["status"] == "pending":
+        lead_upd = {"updated_at": iso(now_utc()), "updated_by": user["name"]}
+        if "due_date" in upd:
+            lead_upd["next_followup_date"] = upd["due_date"]
+        if "reason" in upd:
+            lead_upd["next_followup_reason"] = upd["reason"]
+        await db.leads.update_one({"id": lead["id"]}, {"$set": lead_upd})
+        await log_activity(lead["id"], "followup", f"Follow-up rescheduled to {fmt_dt(upd.get('due_date', f['due_date']))}", user)
+    return clean(await db.followups.find_one({"id": fid}))
+
+
+@api.delete("/followups/{fid}")
+async def delete_followup(fid: str, user: dict = Depends(require_role("admin", "team_leader"))):
+    f = await db.followups.find_one({"id": fid})
+    if not f:
+        raise HTTPException(404, "Follow-up not found")
+    await db.followups.delete_one({"id": fid})
+    lead = await db.leads.find_one({"id": f["lead_id"]})
+    if lead and lead.get("next_followup_date") == f.get("due_date"):
+        await db.leads.update_one({"id": lead["id"]}, {"$set": {"next_followup_date": None, "next_followup_reason": None}})
+    if lead:
+        await log_activity(lead["id"], "followup", "Follow-up deleted", user)
+    return {"ok": True}
+
+
+@api.post("/followups/{fid}/complete")
+async def complete_followup(fid: str, body: Optional[dict] = None, user: dict = Depends(get_current_user)):
+    body = body or {}
+    f = await db.followups.find_one({"id": fid})
+    if not f:
+        raise HTTPException(404, "Follow-up not found")
+    lead = await db.leads.find_one({"id": f["lead_id"]})
+    if lead:
+        can_touch_lead(user, lead)
+    next_date = body.get("next_date")
+    new_status = body.get("lead_status")
+    if lead and not is_final(new_status or lead.get("lead_status")) and not next_date:
+        raise HTTPException(400, "Schedule the next follow-up date, or move the lead to a final status, before completing this follow-up")
+    await db.followups.update_one({"id": fid}, {"$set": {"status": "completed", "completed_at": iso(now_utc()),
+                                                          "outcome": body.get("outcome") or ""}})
+    if lead:
+        await log_activity(lead["id"], "followup_done", f"Follow-up completed. {body.get('outcome') or ''}".strip(), user)
+        upd = {"updated_at": iso(now_utc()), "updated_by": user["name"], "last_contact_date": iso(now_utc())}
+        if new_status and new_status != lead.get("lead_status"):
+            upd["lead_status"] = new_status
+            if body.get("lost_reason"):
+                upd["lost_reason"] = body["lost_reason"]
+            if body.get("expected_joining_date"):
+                upd["expected_joining_date"] = body["expected_joining_date"]
+            await log_audit("lead", lead["id"], "lead_status", lead.get("lead_status"), new_status, user)
+            await log_activity(lead["id"], "status_change", f"Lead Status changed: {lead.get('lead_status')} → {new_status}", user)
+        if next_date and not is_final(new_status or lead.get("lead_status")):
+            upd["next_followup_date"] = next_date
+            upd["next_followup_reason"] = body.get("next_reason") or ""
+            await schedule_followup(lead, next_date, body.get("next_reason") or "", user)
+        else:
+            upd["next_followup_date"] = None
+            upd["next_followup_reason"] = None
+        await db.leads.update_one({"id": lead["id"]}, {"$set": upd})
     return {"ok": True}
 
 
@@ -981,12 +1464,35 @@ async def update_interview(iid: str, body: dict, user: dict = Depends(get_curren
     for f in ("lead_name", "client_name", "job_title", "recruiter_name", "phone"):
         body.pop(f, None)
     await db.interviews.update_one({"id": iid}, {"$set": body})
+    if iv and body.get("datetime") and body["datetime"] != iv.get("datetime"):
+        await db.leads.update_one({"id": iv["lead_id"]}, {"$set": {"interview_date": body["datetime"]}})
+        await log_activity(iv["lead_id"], "interview", f"Interview rescheduled to {fmt_dt(body['datetime'])}", user)
+    if body.get("confirmation") and iv and body["confirmation"] != iv.get("confirmation"):
+        await log_activity(iv["lead_id"], "interview", f"Interview confirmation: {body['confirmation']}", user)
     if body.get("stage") and iv:
         await db.leads.update_one({"id": iv["lead_id"]}, {"$set": {"interview_status": body["stage"]}})
         await log_audit("interview", iid, "stage", iv.get("stage"), body["stage"], user)
+        await log_activity(iv["lead_id"], "interview", f"Interview stage: {iv.get('stage')} → {body['stage']}", user)
         if body["stage"] == "Selected":
             await db.leads.update_one({"id": iv["lead_id"]}, {"$set": {"lead_status": "Selected"}})
+            await log_activity(iv["lead_id"], "status_change", "Lead Status changed → Selected", user)
+        elif body["stage"] == "Attended":
+            await db.leads.update_one({"id": iv["lead_id"]}, {"$set": {"lead_status": "Interview Attended"}})
+        elif body["stage"] == "Rejected":
+            await db.leads.update_one({"id": iv["lead_id"]}, {"$set": {"lead_status": "Rejected", "lost_reason": "Client Rejection",
+                                                                   "next_followup_date": None, "next_followup_reason": None}})
+            await log_activity(iv["lead_id"], "status_change", "Lead Status changed → Rejected", user)
     return await enrich_interview(await db.interviews.find_one({"id": iid}))
+
+
+@api.delete("/interviews/{iid}")
+async def delete_interview(iid: str, user: dict = Depends(require_role("admin", "team_leader"))):
+    iv = await db.interviews.find_one({"id": iid})
+    if not iv:
+        raise HTTPException(404, "Interview not found")
+    await db.interviews.delete_one({"id": iid})
+    await log_activity(iv["lead_id"], "interview", "Interview record deleted", user)
+    return {"ok": True}
 
 
 # ---------------- Joinings ----------------
@@ -1029,10 +1535,26 @@ async def update_joining(jid: str, body: dict, user: dict = Depends(get_current_
     await db.joinings.update_one({"id": jid}, {"$set": body})
     if body.get("status") and j:
         await db.leads.update_one({"id": j["lead_id"]}, {"$set": {"joining_status": body["status"]}})
+        await log_activity(j["lead_id"], "joining", f"Joining status: {j.get('status')} → {body['status']}", user)
         if body["status"] == "Joined":
-            await db.leads.update_one({"id": j["lead_id"]}, {"$set": {"lead_status": "Joined"}})
+            await db.leads.update_one({"id": j["lead_id"]}, {"$set": {"lead_status": "Joined", "next_followup_date": None, "next_followup_reason": None}})
+            await log_activity(j["lead_id"], "status_change", "Lead Status changed → Joined", user)
+        elif body["status"] in ("Joining Confirmed", "Offer Released", "Offer Pending", "Documents Pending"):
+            await db.leads.update_one({"id": j["lead_id"]}, {"$set": {"lead_status": "Joining Pending"}})
         await log_audit("joining", jid, "status", j.get("status"), body["status"], user)
+    if body.get("confirmation") and j and body["confirmation"] != j.get("confirmation"):
+        await log_activity(j["lead_id"], "joining", f"Joining confirmation: {body['confirmation']}", user)
     return await enrich_joining(await db.joinings.find_one({"id": jid}))
+
+
+@api.delete("/joinings/{jid}")
+async def delete_joining(jid: str, user: dict = Depends(require_role("admin", "team_leader"))):
+    j = await db.joinings.find_one({"id": jid})
+    if not j:
+        raise HTTPException(404, "Joining not found")
+    await db.joinings.delete_one({"id": jid})
+    await log_activity(j["lead_id"], "joining", "Joining record deleted", user)
+    return {"ok": True}
 
 
 # ---------------- Dashboards ----------------
@@ -1065,13 +1587,16 @@ async def dashboard_main(user: dict = Depends(get_current_user)):
         "calls_made": calls_today,
         "connected": connected_today,
         "not_connected": calls_today - connected_today,
+        "fresh_leads": sum(1 for l in leads if l.get("lead_status") == "New"),
+        "no_answer": sum(1 for l in leads if l.get("last_call_status") == "No Answer" and l.get("lead_status") not in CLOSED_STATUSES),
         "interested": sum(1 for l in leads if l.get("lead_status") == "Interested"),
-        "followups_due": sum(1 for l in leads if fu(l) and fu(l).date() == today and l.get("lead_status") not in ("Joined", "Lost")),
-        "followups_overdue": sum(1 for l in leads if fu(l) and fu(l) < now and l.get("lead_status") not in ("Joined", "Lost")),
+        "followups_due": sum(1 for l in leads if fu(l) and fu(l).date() == today and l.get("lead_status") not in CLOSED_STATUSES),
+        "followups_overdue": sum(1 for l in leads if fu(l) and fu(l) < now and l.get("lead_status") not in CLOSED_STATUSES),
         "interviews_scheduled": sum(1 for l in leads if l.get("interview_status") in ("Scheduled", "Today", "Tomorrow")),
         "interviews_attended": sum(1 for l in leads if l.get("interview_status") == "Attended"),
         "selected": sum(1 for l in leads if l.get("lead_status") == "Selected"),
         "joined": sum(1 for l in leads if l.get("lead_status") == "Joined"),
+        "rejected": sum(1 for l in leads if l.get("lead_status") in ("Rejected", "Lost")),
     }
 
     def in_month(l): return parse_dt(l.get("created_at")) and iso(parse_dt(l["created_at"])) >= month_start
@@ -1231,10 +1756,10 @@ async def action_required(user: dict = Depends(get_current_user)):
     tomorrow = today + timedelta(days=1)
     fu = lambda l: parse_dt(l.get("next_followup_date"))
 
-    overdue = [l for l in leads if fu(l) and fu(l) < now and l.get("lead_status") not in ("Joined", "Lost")]
+    overdue = [l for l in leads if fu(l) and fu(l) < now and l.get("lead_status") not in CLOSED_STATUSES]
     never_called = [l for l in leads if l.get("call_attempts", 0) == 0 and l.get("lead_status") == "New"]
     unassigned = [l for l in leads if not l.get("assigned_recruiter_id")]
-    stale = [l for l in leads if l.get("age_days", 0) >= 15 and l.get("lead_status") not in ("Joined", "Lost")]
+    stale = [l for l in leads if l.get("age_days", 0) >= 15 and l.get("lead_status") not in CLOSED_STATUSES]
     selected_no_join = [l for l in leads if l.get("lead_status") == "Selected" and not l.get("expected_joining_date")]
 
     scope_q = {} if scope is None else {"recruiter_id": {"$in": scope}}
@@ -1287,8 +1812,8 @@ async def my_day(user: dict = Depends(get_current_user)):
     tomorrow = today + timedelta(days=1)
     leads = [await enrich_lead(l) for l in await db.leads.find({"assigned_recruiter_id": rid}).to_list(2000)]
     fu = lambda l: parse_dt(l.get("next_followup_date"))
-    overdue = [l for l in leads if fu(l) and fu(l) < now and l.get("lead_status") not in ("Joined", "Lost")]
-    todays = [l for l in leads if fu(l) and fu(l).date() == today and l.get("lead_status") not in ("Joined", "Lost")]
+    overdue = [l for l in leads if fu(l) and fu(l) < now and l.get("lead_status") not in CLOSED_STATUSES]
+    todays = [l for l in leads if fu(l) and fu(l).date() == today and l.get("lead_status") not in CLOSED_STATUSES]
     new_leads = [l for l in leads if l.get("lead_status") == "New" and l.get("call_attempts", 0) == 0]
     ivs = [await enrich_interview(iv) for iv in await db.interviews.find({"recruiter_id": rid}).to_list(2000)]
     tomorrow_iv = [iv for iv in ivs if parse_dt(iv.get("datetime")) and parse_dt(iv["datetime"]).date() == tomorrow]
@@ -1562,9 +2087,9 @@ async def write_test_credentials():
 
 ## Recruiters (demo) — password: recruiter123
 - harshika@oaksphere.com
-- kajal@oaksphere.com
 - farheen@oaksphere.com
 - prathemesh@oaksphere.com
+(kajal@oaksphere.com was deleted by the user; a real recruiter account also exists — do not modify it)
 
 ## Auth endpoints
 - POST /api/auth/login  {email, password} -> {token, user}
@@ -1577,16 +2102,36 @@ Auth uses JWT Bearer tokens (Authorization: Bearer <token>), stored in localStor
     Path("/app/memory/test_credentials.md").write_text(content)
 
 
+async def seed_reference_data():
+    if await db.tags.count_documents({}) == 0:
+        for name, color in DEFAULT_TAGS:
+            await db.tags.insert_one({"id": new_id(), "name": name, "color": color, "created_at": iso(now_utc()), "is_default": True})
+    if await db.wa_templates.count_documents({}) == 0:
+        for name, cat, body in DEFAULT_WA_TEMPLATES:
+            await db.wa_templates.insert_one({"id": new_id(), "name": name, "category": cat, "body": body,
+                                              "created_at": iso(now_utc()), "is_default": True})
+    s = await db.settings.find_one({"id": "global"})
+    if s:
+        existing = s.get("lead_statuses") or []
+        merged = existing + [x for x in DEFAULT_SETTINGS["lead_statuses"] if x not in existing]
+        if merged != existing:
+            await db.settings.update_one({"id": "global"}, {"$set": {"lead_statuses": merged}})
+
+
 @app.on_event("startup")
 async def startup():
     await db.users.create_index("email", unique=True)
     await db.leads.create_index("phone")
     await db.leads.create_index("assigned_recruiter_id")
+    await db.leads.create_index("tags")
     await db.followups.create_index("recruiter_id")
+    await db.followups.create_index("lead_id")
+    await db.lead_notes.create_index("lead_id")
     await db.call_logs.create_index("recruiter_id")
     await db.password_reset_tokens.create_index("expires_at", expireAfterSeconds=0)
     await seed_admin()
     await seed_demo()
+    await seed_reference_data()
     await write_test_credentials()
 
 
