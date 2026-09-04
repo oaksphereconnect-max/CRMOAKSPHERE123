@@ -1,0 +1,177 @@
+{
+  "project_name": "OAKsphere Connect",
+  "app_type": "hybrid_fullstack (data-dense B2B SaaS CRM dashboard)",
+  "emotional_archetype": "ARCHETYPE 2: THE PERFORMANCE PRO & SWISS PRECISION (Command-center focus, rapid lead triage, zero lost follow-ups)",
+  "theme": {
+    "default_mode": "light",
+    "toggle_supported": true,
+    "description": "Clean, crisp modern SaaS style (HubSpot/Zoho/Freshsales-inspired). Slate background (#F8FAFC / #0F172A), deep navy sidebar (#0F172A), vibrant precision status indicators."
+  },
+  "typography": {
+    "headings": {
+      "family": "Plus Jakarta Sans, sans-serif",
+      "weights": ["600", "700", "800"],
+      "h1": "text-3xl sm:text-4xl lg:text-5xl font-extrabold tracking-tight",
+      "h2": "text-2xl sm:text-3xl font-bold tracking-tight",
+      "h3": "text-lg sm:text-xl font-semibold tracking-tight",
+      "h4": "text-base font-semibold"
+    },
+    "body": {
+      "family": "Inter, system-ui, sans-serif",
+      "weights": ["400", "500", "600"],
+      "regular": "text-sm leading-relaxed",
+      "small": "text-xs font-medium text-slate-500 dark:text-slate-400"
+    },
+    "mono": {
+      "family": "JetBrains Mono, monospace",
+      "usage": "Lead IDs (e.g., #OAK-9482), Phone numbers, Salary figures, Recruiter Target Metrics"
+    }
+  },
+  "colors": {
+    "slate_neutral": {
+      "background": "bg-slate-50 dark:bg-slate-950",
+      "card": "bg-white dark:bg-slate-900",
+      "sidebar": "bg-[#0B132B] dark:bg-[#030712]",
+      "border": "border-slate-200 dark:border-slate-800",
+      "text_primary": "text-slate-900 dark:text-slate-50",
+      "text_secondary": "text-slate-600 dark:text-slate-400",
+      "text_muted": "text-slate-400 dark:text-slate-500"
+    },
+    "brand_primary": {
+      "main": "#2563EB",
+      "hover": "#1D4ED8",
+      "accent": "#3B82F6",
+      "subtle": "#EFF6FF",
+      "tailwind_classes": "bg-blue-600 hover:bg-blue-700 text-white shadow-sm hover:shadow"
+    },
+    "status_colors": {
+      "green": {
+        "hex": "#10B981",
+        "badge": "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/50 dark:text-emerald-300 dark:border-emerald-800",
+        "dot": "bg-emerald-500",
+        "description": "Completed, Joined, Connected, Offer Accepted, Target Achieved"
+      },
+      "yellow": {
+        "hex": "#F59E0B",
+        "badge": "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/50 dark:text-amber-300 dark:border-amber-800",
+        "dot": "bg-amber-500",
+        "description": "Pending, Follow-up Scheduled, In Review, In Progress"
+      },
+      "red": {
+        "hex": "#EF4444",
+        "badge": "bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/50 dark:text-rose-300 dark:border-rose-800",
+        "dot": "bg-rose-500",
+        "description": "Overdue, Critical, Dropped, Unresponsive, Target Missed"
+      },
+      "blue": {
+        "hex": "#3B82F6",
+        "badge": "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/50 dark:text-blue-300 dark:border-blue-800",
+        "dot": "bg-blue-500",
+        "description": "New Lead, Interview Scheduled, Fresh Priority"
+      },
+      "grey": {
+        "hex": "#6B7280",
+        "badge": "bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700",
+        "dot": "bg-slate-400",
+        "description": "Closed, Not Interested, Invalid, Rejected"
+      }
+    },
+    "priority_tiers": {
+      "hot": "bg-gradient-to-r from-red-600 to-rose-600 text-white font-bold animate-pulse shadow-sm",
+      "high": "bg-orange-500 text-white font-semibold",
+      "medium": "bg-amber-400 text-slate-900 font-semibold",
+      "low": "bg-sky-100 text-sky-800 dark:bg-sky-900/60 dark:text-sky-200 font-medium",
+      "cold": "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400 font-normal"
+    }
+  },
+  "spacing_and_layout": {
+    "sidebar_width": "w-64 flex-shrink-0",
+    "header_height": "h-16",
+    "content_padding": "p-4 sm:p-6 lg:p-8 space-y-6",
+    "grid_modes": {
+      "kpi_grid": "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4",
+      "dashboard_split": "grid grid-cols-1 lg:grid-cols-12 gap-6",
+      "calling_split": "grid grid-cols-1 lg:grid-cols-3 gap-6",
+      "cards_grid": "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5"
+    }
+  },
+  "visual_enhancers": {
+    "card_style": "rounded-xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm hover:shadow-md transition-shadow duration-200",
+    "header_glass": "backdrop-blur-md bg-white/90 dark:bg-slate-900/90 border-b border-slate-200/80 dark:border-slate-800 sticky top-0 z-40",
+    "table_style": "w-full text-left text-sm border-separate border-spacing-0 rounded-lg overflow-hidden border border-slate-200 dark:border-slate-800",
+    "table_header": "bg-slate-50 dark:bg-slate-800/60 text-slate-700 dark:text-slate-300 font-semibold uppercase text-[11px] tracking-wider py-3 px-4 border-b border-slate-200 dark:border-slate-800",
+    "table_row": "hover:bg-slate-50/80 dark:hover:bg-slate-800/40 transition-colors border-b border-slate-100 dark:border-slate-800/60"
+  },
+  "image_urls": {
+    "recruiter_avatars": [
+      {
+        "url": "https://images.unsplash.com/photo-1494790108377-be9c29b29330?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NTJ8MHwxfHNlYXJjaHwzfHxwcm9mZXNzaW9uYWwlMjBoZWFkc2hvdCUyMHBvcnRyYWl0fGVufDB8fHx8MTc4ODUyMjEwNXww&ixlib=rb-4.1.0&q=85",
+        "name": "Priya Sharma (Senior Recruiter - BPO & Customer Voice)"
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NTJ8MHwxfHNlYXJjaHwxfHxwcm9mZXNzaW9uYWwlMjBoZWFkc2hvdCUyMHBvcnRyYWl0fGVufDB8fHx8MTc4ODUyMjEwNXww&ixlib=rb-4.1.0&q=85",
+        "name": "Rahul Verma (Team Lead - BFSI & NBFC)"
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1609436132311-e4b0c9370469?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NTJ8MHwxfHNlYXJjaHw0fHxwcm9mZXNzaW9uYWwlMjBoZWFkc2hvdCUyMHBvcnRyYWl0fGVufDB8fHx8MTc4ODUyMjEwNXww&ixlib=rb-4.1.0&q=85",
+        "name": "Ananya Roy (Senior Recruiter - Real Estate & Retail)"
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NTJ8MHwxfHNlYXJjaHwyfHxwcm9mZXNzaW9uYWwlMjBoZWFkc2hvdCUyMHBvcnRyYWl0fGVufDB8fHx8MTc4ODUyMjEwNXww&ixlib=rb-4.1.0&q=85",
+        "name": "Vikram Malhotra (Agency Owner / Admin)"
+      }
+    ],
+    "office_banner": "https://images.unsplash.com/photo-1522071820081-009f0129c71c?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzOTB8MHwxfHNlYXJjaHw0fHxvZmZpY2UlMjB0ZWFtfGVufDB8fHx8MTc4ODUyMjEwMnww&ixlib=rb-4.1.0&q=85",
+    "call_center_team": "https://images.unsplash.com/photo-1606857521015-7f9fcf423740?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzOTB8MHwxfHNlYXJjaHwyfHxvZmZpY2UlMjB0ZWFtfGVufDB8fHx8MTc4ODUyMjEwMnww&ixlib=rb-4.1.0&q=85"
+  },
+  "component_paths": {
+    "dialog": "src/components/ui/dialog.jsx",
+    "sheet": "src/components/ui/sheet.jsx",
+    "tabs": "src/components/ui/tabs.jsx",
+    "table": "src/components/ui/table.jsx",
+    "badge": "src/components/ui/badge.jsx",
+    "card": "src/components/ui/card.jsx",
+    "select": "src/components/ui/select.jsx",
+    "calendar": "src/components/ui/calendar.jsx",
+    "sonner": "src/components/ui/sonner.jsx",
+    "dropdown_menu": "src/components/ui/dropdown-menu.jsx",
+    "avatar": "src/components/ui/avatar.jsx",
+    "progress": "src/components/ui/progress.jsx"
+  },
+  "instructions_to_main_agent": {
+    "core_mission": "Build OAKsphere Connect as a highly responsive, data-rich, fully interactive recruitment CRM where zero leads are lost due to recruiter oversight. All views must read/write to the backend database.",
+    "role_switcher": "Include an top bar Role Switcher (Admin / Team Lead / Recruiter) allowing instant testing of permissions and target metrics.",
+    "sidebar_15_sections": [
+      "Dashboard (KPIs, Charts, Recruiter Leaderboard, Quick Triage)",
+      "My Day (6-step guided daily action stepper with progress bar)",
+      "All Leads (Data table with global search, status filters, priority badges, saved views, export)",
+      "My Leads (Filtered view for logged-in recruiter)",
+      "Calling List (Prioritized queue: Hot/Overdue first, action buttons for Call, WhatsApp, Status Update)",
+      "Follow-ups (4 views: Today, Overdue with red alert badges, Upcoming, Completed)",
+      "Interviews (Stage pipeline: Scheduled, Attended, Cleared, Rejected, No Show)",
+      "Joining (Offer Released, Document Verification, Joined, Drop-out, Escalated)",
+      "Jobs (Job openings for BPO Voice/Non-Voice, Telecalling, Banking, Real Estate with target counts)",
+      "Clients (Client companies e.g., Teleperformance, HDFC Bank, Concentrix, NoBroker)",
+      "Recruiters (Team roster, monthly target vs actual, call duration, conversion rate)",
+      "Reports (Scorecard, Funnel visualization, Recruiter Targets, Lead Aging report)",
+      "Import Leads (CSV/Excel upload simulation with column mapping, deduplication preview, batch import)",
+      "Notifications (Alert center for overdue follow-ups, interview updates, urgent joining drops)",
+      "Settings (Agency profile, Priority rules, Call disposition options, Lead auto-assignment rules)"
+    ],
+    "key_modals_and_flows": {
+      "call_disposition_popup": "When recruiter clicks 'Call' or 'Update Status', pop up a mandatory validation modal with outcomes: Connected (Interested/Not Interested/Callback), Unreachable, Busy, Switched Off, Interview Scheduled, Wrong Number. Enforce mandatory next follow-up date/time if Callback or Follow-up selected.",
+      "quick_whatsapp_trigger": "Clicking WhatsApp opens pre-filled template selection (Interview Invite, Follow-up Reminder, Document Request) with direct copy or open WhatsApp link.",
+      "lead_assignment_modal": "Bulk select leads in All Leads -> Assign to Recruiter with workload count indicator."
+    },
+    "testing_attribute": "CRITICAL: Every button, input, tab, select, table row action, modal trigger, and metric card MUST include a unique data-testid (e.g., data-testid='disposition-submit-button', data-testid='kpi-today-calls')."
+  },
+  "UNIVERSAL GUIDELINES FOR MAIN AGENT": [
+    "You MUST NOT center align the app container (.App { text-align: center }).",
+    "You MUST NOT rely on transparent overlay backgrounds for dropdowns, modals, or headers. Always specify semi-opaque or solid surfaces with border-slate-200.",
+    "Ensure high contrast APCA standards: dark text on light cards, bright crisp badges on white backgrounds.",
+    "Every button and input MUST have a distinct data-testid attribute.",
+    "Do NOT use default Inter for H1/H2 headlines; use Plus Jakarta Sans or Outfit for crisp high-end SaaS feel.",
+    "Ensure mobile drawer view works seamlessly for recruiters taking calls on mobile phones.",
+    "Use sonner for toast notifications on lead update, follow-up scheduled, and lead assignment."
+  ]
+}
